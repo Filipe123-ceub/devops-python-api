@@ -101,14 +101,16 @@ jobs:
             export PATH=\$PATH:/snap/bin
 
             echo "Autenticando Docker no Amazon ECR usando IAM Role da EC2..."
-            aws ecr get-login-password --region ${AWS_REGION} \vert{} docker login --username AWS --password-stdin${ECR_REGISTRY}
+            ECR_PASS=\$(aws ecr get-login-password --region ${AWS_REGION})
+            docker login --username AWS --password-stdin ${ECR_REGISTRY} <<< "\${ECR_PASS}"
 
             echo "Baixando nova imagem ${IMAGE_URI}..."
             docker pull ${IMAGE_URI}
 
             echo "Substituindo container anterior..."
-            docker stop devops-python-api || true
-            docker rm devops-python-api || true
+            if [ "\$(docker ps -aq -f name=devops-python-api)" ]; then
+              docker rm -f devops-python-api
+            fi
 
             echo "Iniciando novo container na porta 80..."
             docker run -d \
