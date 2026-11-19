@@ -43,8 +43,6 @@ jobs:
     name: Build Docker e Push para Amazon ECR
     needs: test
     runs-on: ubuntu-latest
-    outputs:
-      image_uri: ${{ steps.build-image.outputs.image }}
 
     steps:
       - name: Obter o codigo
@@ -63,16 +61,10 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Construir e publicar imagem Docker no ECR
-        id: build-image
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
-          IMAGE_TAG: ${{ github.sha }}
         run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+          docker build -t ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:${{ github.sha }} -t ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:latest .
+          docker push ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:${{ github.sha }}
+          docker push ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:latest
 
   deploy-ec2:
     name: Deploy automatizado na instancia EC2
@@ -91,21 +83,24 @@ jobs:
         env:
           AWS_REGION: ${{ secrets.AWS_REGION }}
           ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
-          IMAGE_URI: ${{ needs.build-and-push-ecr.outputs.image_uri }}
+          IMAGE_TAG: ${{ github.sha }}
           EC2_USER: ${{ secrets.EC2_USER }}
           EC2_HOST: ${{ secrets.EC2_HOST }}
         run: |
-          ECR_REGISTRY="${IMAGE_URI%%/*}"
           ssh -i ~/.ssh/deploy_key "${EC2_USER}@${EC2_HOST}" << EOF
             set -e
             export PATH=\$PATH:/snap/bin
 
-            echo "Autenticando Docker no Amazon ECR usando IAM Role da EC2..."
-            ECR_PASS=\$(aws ecr get-login-password --region ${AWS_REGION})
-            docker login --username AWS --password-stdin ${ECR_REGISTRY} <<< "\${ECR_PASS}"
+            ACCOUNT_ID=\$(aws sts get-caller-identity --query Account --output text)
+            ECR_REGISTRY="\${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+            IMAGE_URI="\${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
 
-            echo "Baixando nova imagem ${IMAGE_URI}..."
-            docker pull ${IMAGE_URI}
+            echo "Autenticando Docker no Amazon ECR (\${ECR_REGISTRY})..."
+            ECR_PASS=\$(aws ecr get-login-password --region ${AWS_REGION})
+            docker login --username AWS --password-stdin "\${ECR_REGISTRY}" <<< "\${ECR_PASS}"
+
+            echo "Baixando nova imagem \${IMAGE_URI}..."
+            docker pull "\${IMAGE_URI}"
 
             echo "Substituindo container anterior..."
             if [ "\$(docker ps -aq -f name=devops-python-api)" ]; then
@@ -117,7 +112,7 @@ jobs:
               --name devops-python-api \
               --restart unless-stopped \
               -p 80:8000 \
-              ${IMAGE_URI}
+              "\${IMAGE_URI}"
 
             echo "Verificando status do container e saude da API..."
             sleep 3
